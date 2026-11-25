@@ -1,0 +1,9 @@
+__pycache__/
+recordings/
+README.md
+.gitignore
+retrieve.py
+.cache/
+*.oakapp
+downloads/
+venv/

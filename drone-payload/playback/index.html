@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Flight playback</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header class="page-header"><span class="eyebrow">OAK4 · FLIGHT RECORDER</span><h1>Flight playback</h1><p id="summary">Loading recording…</p></header>
+<main>
+<div id="notice" role="status"></div>
+<section class="controls" aria-label="Playback controls">
+<button id="play" disabled>Play all cameras</button><button id="reset">Back to start</button>
+<label>Speed <select id="speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label>
+<output id="clock">0:00.000</output>
+<input id="timeline" type="range" min="0" max="1" step="0.001" value="0" aria-label="Flight time">
+<form id="range-form" class="range-controls" aria-label="Displayed time interval" novalidate>
+<label for="range-start">Start <input id="range-start" type="text" inputmode="decimal" value="0:00.000" aria-describedby="range-error" title="Seconds or m:ss.sss, measured from recording start" disabled></label>
+<label for="range-end">End <input id="range-end" type="text" inputmode="decimal" value="0:00.000" aria-describedby="range-error" title="Seconds or m:ss.sss, measured from recording start" disabled></label>
+<button id="apply-range" type="submit" disabled>Apply range</button><button id="full-range" type="button" disabled>Full session</button>
+<span id="range-summary" class="range-summary"></span>
+<span id="range-error" role="alert"></span>
+</form>
+</section>
+<section id="cameras" class="cameras" aria-label="Camera streams"></section>
+<section class="readings" aria-label="Sensor values"><div><span>Relative height</span><strong id="height">—</strong></div><div><span>Pressure</span><strong id="pressure">—</strong></div><div><span>Temperature</span><strong id="temperature">—</strong></div></section>
+<section class="graphs" aria-label="Sensor graphs">
+<article><h2>Relative height <small>m</small></h2><canvas id="height-chart" aria-label="Relative height versus time"></canvas></article>
+<article><h2>Pressure <small>Pa</small></h2><canvas id="pressure-chart" aria-label="Pressure versus time"></canvas></article>
+<article><h2>Temperature <small>°C</small></h2><canvas id="temperature-chart" aria-label="Temperature versus time"></canvas></article>
+</section>
+<p class="footnote">Set start/end in seconds or m:ss.sss from recording start. Click a graph to seek all cameras. Streams retain native resolution; use fullscreen to inspect detail. Height is relative to the starting pressure.</p>
+</main><script src="/app.js"></script>
+</body></html>

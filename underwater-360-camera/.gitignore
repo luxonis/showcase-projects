@@ -1,0 +1,6 @@
+recordings/
+*.oakapp
+__pycache__/
+.cache/
+downloads/
+venv

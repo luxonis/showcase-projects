@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+export XDG_CONFIG_HOME="$project_dir/.oakctl-config"
+export XDG_DATA_HOME="$project_dir/.oakctl-data"
+export OAKCTL_ANALYTICS=0
+exec "$project_dir/.tools/oakctl" "$@"

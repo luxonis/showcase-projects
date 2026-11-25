@@ -1,0 +1,22 @@
+identifier = "com.ffcdrone.flight-recorder"
+app_version = "1.0.8"
+base_image = "luxonis/oakapp-base:1.3.0"
+entrypoint = ["python3", "-u", "/app/main.py"]
+cwd = "/app"
+restart_policy = "on-failure"
+stop_grace_period = "30s"
+optional_devices = ["/dev/i2c-4"]
+allowed_devices = [{ allow = true, type = "c", major = 89, minor = 4, access = "rw" }]
+prepare_container = [
+    { type = "COPY", source = "requirements.txt", target = "requirements.txt" },
+    { type = "RUN", command = "python3 -m pip install -r /app/requirements.txt --break-system-packages" },
+]
+
+[env]
+RECORDER_FPS = "30"
+RECORDER_SENSOR_HZ = "10"
+RECORDER_I2C_BUS = "4"
+RECORDER_I2C_ADDRESS = "0x47"
+RECORDER_API_PORT = "8088"
+RECORDER_SEGMENT_SECONDS = "10"
+RECORDER_RESERVE_MB = "1024"

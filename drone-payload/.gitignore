@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.tools/
+.oakctl-config/
+.oakctl-data/
+recordings/
+dist/
+.pytest_cache/
+.secrets/
