@@ -32,7 +32,8 @@ class ObjectObservation:
     h: float
     area: float         # mask area / image area
     stamp: float        # time.monotonic()
-    confidence: float = 1.0
+    confidence: float
+    seq: int            # sequence number of the camera frame the mask comes from
 
 
 @dataclass

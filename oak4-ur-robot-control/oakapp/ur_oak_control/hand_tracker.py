@@ -85,6 +85,7 @@ class HandTracker(threading.Thread):
                         else (int(view_size[0]), int(view_size[1])))
         self.view_map = (1.0, 0.0, 1.0, 0.0)   # det-normalised -> view-normalised: ax, bx, ay, by
         self.view_frame = None                 # latest high-res BGR frame for the web view
+        self.view_history: deque = deque(maxlen=int(fps * 0.5) + 2)   # (camera seq, frame), 0.5 s: see display_frame
         # depth sources
         if depth_source not in SOURCES:
             raise ValueError(f"depth_source must be one of {SOURCES}, got {depth_source!r}")
@@ -328,11 +329,13 @@ class HandTracker(threading.Thread):
                     v = q_view.tryGet()
                     if v is not None:
                         self.view_frame = v.getCvFrame()
+                        self.view_history.append((v.getSequenceNum(), self.view_frame))
                         if not mapped and color_msg is not None:
                             self._map_view(color_msg, v)
                             mapped = True
-                elif color_frame is not None:
+                elif new_color:
                     self.view_frame = color_frame
+                    self.view_history.append((c.getSequenceNum(), color_frame))
                 if self.held is None or self.held.hand_needed:
                     self._process(det_msg)
                 elif self.det is not None:       # object tracked by XMem: hand ignored, skip its work
@@ -342,8 +345,8 @@ class HandTracker(threading.Thread):
                         det = self.det
                         fresh = det is not None and now - det["stamp"] < 0.3
                         palm = det["rect"][:4] if fresh else None
-                        self.held.process(color_frame, now, palm,
-                                          det["depth"] if fresh else float("nan"), self.depth_crop)
+                        self.held.process(color_frame, now, palm, det["depth"] if fresh else float("nan"),
+                                          self.depth_snapshot(), color_msg.getSequenceNum())
                     except Exception as exc:   # never let object grasping stop hand following
                         import traceback
                         print(f"[hand_tracker] held object failed, grasping off: "
@@ -466,8 +469,8 @@ class HandTracker(threading.Thread):
         return outs, tof.depth
 
     def _build_tof(self, pipeline, socket, color):
-        """ToF depth aligned to the colour detection frame (alignment on the app CPU, as in
-        the depthai ToF align example)."""
+        """ToF depth aligned to the colour detection frame (alignment on the device: on the
+        app CPU it took about one core)."""
         tof = pipeline.create(dai.node.ToF).build(
             boardSocket=socket, profile=getattr(dai.ToFConfig.Profile, self.tof_profile),
             fps=float(self.tof_fps) if self.tof_fps else None)
@@ -481,13 +484,9 @@ class HandTracker(threading.Thread):
             tof.amplitude.link(cf.amplitude)
             self._tof_cf = (cf.initialConfig, cf.inputConfig.createInputQueue())
             depth = cf.filteredDepth
-        align = pipeline.create(dai.node.ImageAlign)
-        align.setRunOnHost(True)
-        depth.link(align.input)
-        color.link(align.inputAlignTo)
         print(f"[hand_tracker] ToF on {socket.name}, profile {self.tof_profile}, "
               f"confidence >= {self.tof_confidence}", flush=True)
-        return align.outputAligned, tof.depth
+        return self._align_to_color(pipeline, depth, color, on_host=False), tof.depth
 
     def _sysinfo_update(self, m) -> None:
         """SystemInformation(RVC4) -> self.sysinfo: temp_c (chip average), cpu_temp_c, cpu_pct, mem_pct."""
@@ -582,14 +581,31 @@ class HandTracker(threading.Thread):
             return None
         return self.depth_frames.get(name)
 
-    def depth_crop(self, box_px):
+    def depth_snapshot(self):
+        """depth_crop over the depth maps at hand now (when a colour frame arrives), for work on
+        that frame done later - not the newer maps that exist by then (the camera moves)."""
+        maps = {name: self.fresh_depth(name) for name in ("stereo", "tof", "fused")}
+        return lambda box_px: self.depth_crop(box_px, maps)
+
+    def display_frame(self):
+        """View frame for the web view: while the object mask is fresh, the frame it was computed
+        on (mask and image line up; the stream lags by the tracker latency), else the newest."""
+        held = self.held                       # the tracker thread may set it to None
+        o = held.latest if held is not None else None
+        if o is not None and time.monotonic() - o.stamp < 0.5:
+            for seq, frame in reversed(list(self.view_history)):
+                if seq == o.seq:
+                    return frame
+        return self.view_frame
+
+    def depth_crop(self, box_px, maps):
         """Selected depth source (uint16 mm) over a pixel box (x0, y0, x1, y1) of the colour
-        detection frame; None if that source has no fresh map."""
+        detection frame; None if that source has no map. maps: {source: map}, see depth_snapshot."""
         x0, y0, x1, y1 = box_px
         src = self.depth_source
 
         def crop(name):
-            d = self.fresh_depth(name)
+            d = maps[name]
             if d is None:
                 return None
             if d.shape[:2] != (self.size, self.size):   # maps are aligned to the colour frame
