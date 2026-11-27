@@ -1,0 +1,9 @@
+depthai==3.12.2
+depthai-nodes==0.7.0
+# held-object tracking (MobileSAM + Track-Anything) on the HTP: same versions as the
+# luxonis/oakapp-base onnxruntime image (Dockerfile.onnxruntime) + onnx for the model prep
+onnxruntime==1.28.0
+onnxruntime-qnn==2.4.0
+onnx==1.22.0
+# keep Ubuntu / ROS numpy 1.26 (a pip numpy 2 cannot replace the Debian package)
+numpy<2

@@ -1,0 +1,60 @@
+identifier = "com.example.robotics.ur-robot-control"
+app_version = "1.0.0"
+
+# Official ROS 2 Kilted image (match the host distro so MoveIt/RViz on the host can talk to the driver) (multi-arch, includes linux/arm64 for OAK4).
+base_image = "ros:kilted-ros-base"
+
+prepare_container = [
+    { type = "RUN", command = "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ros-kilted-ur-robot-driver ros-kilted-ur-controllers python3-yaml python3-numpy python3-pip libatomic1 && rm -rf /var/lib/apt/lists/*" },
+    # DepthAI v3 for the hand tracker (pinned pair used by oak-examples hand-pose).
+    { type = "COPY", source = "requirements.txt", target = "requirements.txt" },
+    # onnx needs a newer typing_extensions than Ubuntu's (pip cannot uninstall the Debian one)
+    { type = "RUN", command = "python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed 'typing_extensions>=4.15'" },
+    { type = "RUN", command = "python3 -m pip install --no-cache-dir --break-system-packages -r /app/requirements.txt" },
+    # ONNX Runtime QNN on the HTP, as in luxonis/oakapp-base Dockerfile.onnxruntime: stable path
+    # to the wheel's QNN libraries / Hexagon skels (ADSP_LIBRARY_PATH below).
+    { type = "RUN", command = "python3 -c \"import os, onnxruntime_qnn as q; d = getattr(q, 'LIB_DIR_FULL_PATH', os.path.dirname(q.get_library_path())); os.symlink(d, '/opt/qnn-libs'); print('qnn libs:', d)\"" },
+    # Held-object tracking models (MobileSAM + Track-Anything, ~294 MB): downloaded, verified and
+    # prepared once at build time into /opt/track-anything-models (track_anything/model_assets).
+    { type = "COPY", source = "track_anything/__init__.py", target = "track_anything/__init__.py" },
+    { type = "COPY", source = "track_anything/model_assets/__init__.py", target = "track_anything/model_assets/__init__.py" },
+    { type = "COPY", source = "track_anything/model_assets/prepare.py", target = "track_anything/model_assets/prepare.py" },
+    { type = "COPY", source = "track_anything/model_assets/memory_graph.py", target = "track_anything/model_assets/memory_graph.py" },
+    { type = "COPY", source = "track_anything/model_assets/manifest.json", target = "track_anything/model_assets/manifest.json" },
+    { type = "RUN", command = "cd /app && python3 -u -m track_anything.model_assets.prepare" },
+]
+
+# NPU (Hexagon HTP) access for ONNX Runtime QNN - see luxonis/oakapp-base README.
+optional_devices = ["/dev/fastrpc-cdsp", "/dev/adsprpc-smd", "/dev/dma_heap/qcom,system", "/dev/dma_heap/system"]
+optional_mounts = ["/opt/luxonis/npu-runtime:/opt/luxonis/npu-runtime:ro,rbind"]
+allowed_devices = [{ allow = true, access = "rw" }]
+
+# Palm detection model, cached on the device at build time.
+depthai_models = { yaml_path = "./depthai_models" }
+
+prepare_build_container = []
+
+build_steps = ["chmod +x /app/entrypoint.sh"]
+
+entrypoint = ["/app/entrypoint.sh"]
+
+stop_grace_period = "20s"
+
+# Defaults; scripts/deploy.sh overrides these from config/<profile>.env.
+[env]
+ROBOT_IP = ""
+UR_TYPE = "ur5e"
+HEADLESS_MODE = "true"
+AUTO_POWER_ON = "false"
+AUTO_PLAY_PROGRAM = ""
+CONTROL_MODE = ""   # waypoints | hand | none (empty: RUN_MOTION decides)
+RUN_MOTION = "true"
+FOLLOW_MODE = "mirror"
+WEB_VIEW_PORT = "8090"
+DEPTH_SOURCE = ""    # stereo | tof | fused (empty: depth_source in the YAML)
+MOTION_LOOPS = "0"
+MAX_JOINT_SPEED = "0.5"
+ROS_DOMAIN_ID = "0"
+# ONNX Runtime QNN: Hexagon skels (symlink made at build), compiled QNN contexts (in the container)
+ADSP_LIBRARY_PATH = "/opt/qnn-libs"
+OAK4ORT_CACHE_DIR = "/opt/track-anything-cache"

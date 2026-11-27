@@ -1,0 +1,75 @@
+# Hand-follow settings (see ur_oak_control/follow_controller.py).
+#
+# The camera is treated as mounted on the tool flange, looking along tool z.
+# Offsets are in the camera frame: x = image right, y = image down, z = forward.
+
+# mirror: camera NOT on the arm (simulation) - hand up -> tool up, etc.
+# servo:  camera really on the tool - keep the hand centred at reference_depth.
+mode: mirror
+
+# Joint pose the following is relative to (degrees). Optical axis horizontal,
+# pointing away from the base, image "down" = world down. Verified with IK to
+# reach the whole workspace box below on UR5e and UR5.
+home_joints_deg: [0, -90, 110, -20, 90, 180]
+
+# Rotation of the camera image about the optical axis vs. tool0 (0/90/180/270),
+# for a camera mounted rotated on the flange.
+camera_rotation_deg: 0
+
+workspace: [0.20, 0.15, 0.15]   # +- m around home (right/left, down/up, forward/back)
+max_tcp_speed: 0.15             # m/s
+max_joint_step_rad: 0.15        # safety: reject IK solutions that jump further per cycle
+rate_hz: 20
+
+camera_fps: 15
+min_confidence: 0.6
+deadband: 0.03                  # ignore small offsets from the image centre
+smoothing: 0.35                 # 1.0 = no filtering
+
+follow_depth: true              # also follow towards / away from the camera
+reference_depth: 0.6            # m
+
+gain_xy: 0.5                    # mirror: m of tool motion per full image width
+gain_z: 0.5                     # mirror: m of tool motion per m of hand depth change
+kp_xy: 0.4                      # servo: m/s per normalised image error
+kp_z: 0.5                       # servo: m/s per m depth error
+
+lost_timeout: 0.5               # s without a hand -> hold position
+return_home_after: 5.0          # s without a hand -> drift back home (0 = never)
+
+# Depth sources (all aligned to the colour image). The web view buttons switch the source
+# live - the arm follows whichever is selected. DEPTH_SOURCE=... in the env overrides this.
+depth_source: fused             # stereo | tof | fused (falls back if the sensor is missing)
+# How "fused" is made (FUSION_ENGINE=... in the env overrides this):
+#   heuristic  per-pixel rule on the app CPU (fuse_near_m / fuse_far_m below)
+#   neural     depthai ToFStereoFusion (beta, RVC4): ToF + NeuralDepth MEDIUM + fusion network.
+#              Uses its own ToF MID_RANGE and neural stereo: stereo_engine / tof_profile are ignored.
+#   vpp        ToF painted as a virtual pattern onto the stereo pair, then classic StereoDepth.
+#              EXPERIMENTAL: on OAK4-LITE-TOF (2026-11-26) its stereo outputs stayed empty - use neural.
+fusion_engine: heuristic
+neural_fusion_confidence: 0.3   # neural only: 0..1, fused pixels below this are dropped
+fusion_tof_near: true           # neural / vpp: ToF wins below fuse_near_m, blends into the device-fused
+                                # depth up to fuse_far_m (the network alone leans on stereo up close)
+vpp_size: [640, 400]            # vpp only: rectified stereo size (1280x800 = denser, hotter)
+stereo_engine: classic          # classic (StereoDepth, runs cooler) | neural (NeuralDepth)
+stereo_preset: ROBOTICS         # classic only: DEFAULT / ROBOTICS / ACCURACY / DENSITY / FAST_ACCURACY / FAST_DENSITY / HIGH_DETAIL / FACE
+stereo_size: [640, 400]         # classic only: mono input size, px
+neural_depth_model: NEURAL_DEPTH_LARGE   # neural only: NANO / SMALL / MEDIUM / LARGE / EXTRA_LARGE
+tof: auto                       # auto (use it if the device has one) | true | false
+tof_profile: HIGH_RANGE         # LOW_RANGE | MID_RANGE | HIGH_RANGE - MID wraps a wall at ~3 m to a few cm
+tof_min_m: 0.10                 # ToF closer than this is dropped (VD55H1 noise / the desk under the lens)
+tof_confidence: 0.0             # 0..1 amplitude filter, 0 = off (no measurable effect in our tests)
+fuse_near_m: 0.35               # closer than this (by ToF): fused = ToF only
+fuse_far_m: 0.8                 # farther than this: fused = stereo only (blend in between)
+
+# Depth view (second stream): fixed colour range so colours stay stable while you move
+depth_view_range_m: [0.15, 1.5]
+depth_view_size: 960
+view_fps: 12
+# Video labels on the RGB stream (toggle with "l" in the web view).
+# {device} = camera product name, {source} = selected depth source.
+view_labels:
+  - "NO PC - everything runs on the {device}"
+  - "UR ROS 2 driver on the camera"
+  - "Hand AI on-device"
+  - "Depth: {source}"

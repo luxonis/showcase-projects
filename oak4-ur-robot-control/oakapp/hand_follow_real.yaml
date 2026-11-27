@@ -1,0 +1,158 @@
+# Hand-follow settings for the REAL arm with the camera on the end effector (eye-in-hand).
+# Conservative first-run limits; widen workspace / speed only after it behaves.
+# Selected by config/real.env (HAND_FOLLOW_CONFIG=/app/hand_follow_real.yaml).
+
+mode: servo
+
+# "current": the pose the arm is in when the app starts is the follow home - no initial
+# move. Jog the arm on the pendant to a safe start pose (camera looking at free space)
+# before pressing Play. A list of 6 joint angles (deg) would move there first instead.
+home_joints_deg: current
+
+# The tool keeps the orientation it had at the start (in the robot base frame) while it
+# follows; the wrist joints move as needed for that. Optionally hold joints at their start
+# angle (base, shoulder, elbow, wrist_1, wrist_2, wrist_3) - the rest then keep the
+# orientation as close as they can, e.g. [wrist_2].
+locked_joints: []
+
+# Rotation of the camera image about the optical axis vs. tool0 (0/90/180/270).
+# Verify with DRY_RUN=true: hand to the image right must make the tool go towards the hand.
+camera_rotation_deg: 180       # camera mounted upside down on the flange
+
+workspace: [0.30, 0.30, 0.30]   # +- m around home (camera x, y, z)
+max_tcp_speed: 0.25             # m/s (pendant speed limit applies on top)
+max_tcp_accel: 1.0             # m/s^2 - smooth start/stop, filters detection jitter
+command_lookahead: 0.1          # s - streamed point horizon (arm glides towards each target)
+max_command_lead: 0.06         # m - command may lead the real tool by at most this (anti wind-up)
+max_joint_step_rad: 0.04        # reject IK solutions that jump further per cycle (50 Hz -> 2 rad/s)
+rate_hz: 50                     # command stream rate
+
+camera_fps: 15
+min_confidence: 0.6              # a fist scores lower than an open palm
+deadband: 0.025                 # normalised image error ignored around the centre
+deadband_z: 0.03                # m - stereo depth is noisy
+smoothing: 0.21                 # per cycle; 0.21 @ 50 Hz = same filter as 0.45 @ 20 Hz
+
+follow_depth: true
+reference_depth: 0.6            # m, keep the palm at this distance
+
+kp_xy: 1.2                      # m/s per normalised image error
+kp_z: 1.0                       # m/s per m depth error
+
+lost_timeout: 0.5               # s without a hand -> hold position
+return_home_after: 0            # 0 = stay where it is when the hand is lost
+
+# Gripper: wrist twist -> close, upright palm -> open. Backend via GRIPPER in config/real.env
+# (log | onrobot | tool_io, see ur_oak_control/gripper.py).
+# off: hand following only (first bring-up; GRIPPER=none in config/real.env)
+# twist: palm upright -> open, wrist turned sideways (either way) -> close
+# fingers: open hand / fist (hand landmark model, less reliable)
+grip_mode: "off"
+twist_open_deg: 30              # |twist from upright| below this -> open
+twist_close_deg: 60             # above this -> close (in between: no change)
+twist_reference_deg: auto       # image angle of your upright hand; auto = learned from the
+                                # first frames the hand is seen (logged - pin it here)
+grip_debounce_frames: 3         # same open/closed result this many times in a row (~0.2 s)
+# Grasping what the person holds (ur_oak_control/held_object.py + grasp.py): while following
+# the hand, the object next to the palm (at the hand's depth, not skin coloured) is selected
+# and tracked; it takes over from the hand, the arm brings it to grasp_target (where an
+# object between the jaws appears in the camera), closes the gripper and holds until
+# POST /object/release. GRASP=false turns it off.
+object:
+  enabled: true
+  tracker: xmem                   # xmem (MobileSAM + Track-Anything on the HTP) | cue (no model)
+  region_scale: 2.6               # search square around the palm (x palm box)
+  depth_band_m: 0.15              # object within this of the hand depth
+  skin_cr: [133, 180]             # YCrCb skin range (excluded from the object)
+  skin_cb: [77, 135]
+  min_area_rel: 0.10              # object blob vs palm box area
+  max_area_rel: 4.0
+  select_frames: 5                # cue steady this many frames -> select with MobileSAM
+  min_mask_px: 150                # tracked mask smaller than this = lost
+  lost_frames: 8                  # lost this many frames in a row -> select again
+  max_skin_overlap: 0.35          # reject a MobileSAM mask that is mostly skin (the hand)
+  min_cue_overlap: 0.25
+
+grasp:
+  confirm_frames: 3
+  # measured 2026-11-26 {x: 0.4166, y: 0.1848, depth_m: 0.136} (object held between the RG2 jaws),
+  # then 2 cm deeper into the jaws (depth -0.02) and 1 cm towards the gripper centre line
+  # (image x +0.070 = 0.01 m * fx 0.82 / 0.116 m)
+  grasp_target: {x: 0.487, y: 0.1848, depth_m: 0.116}
+  tol_xy: 0.04                    # normalised image error accepted at the grasp
+  tol_z: 0.02                     # m
+  close_frames: 4                 # frames inside the tolerance before closing
+  pregrasp_m: 0.08                # hold back this much until x / y are aligned
+  approach_depth_m: 0.30          # uncalibrated: only keep the object centred this far away
+  auto_grip: true                 # GRASP_AUTO_GRIP=false: approach only
+  release_after_s: 0              # 0 = hold until POST /object/release
+  regrip_cooldown_s: 5
+  slow_zone_m: 0.12               # last 12 cm before the grasp depth: slow down linearly ...
+  slow_min: 0.3                   # ... to 0.3 x the approach speed / gains (no overshoot)
+  speed_factor: 0.5               # approach = 0.5 x hand tracking: kp_xy / kp_z, max_tcp_speed,
+                                  # max_tcp_accel (set those here to override one directly)
+  workspace: [0.30, 0.30, 0.30]   # +- m around the start pose while approaching (camera x, y, z); 0.12 stopped short
+  deadband: 0.008
+  deadband_z: 0.008
+
+# After a grasp: carry the object to a recorded pose, open the gripper, return to the follow
+# home (the start pose) and follow again. Record the poses by hand-guiding the arm (see
+# README): POST /drop/record (drop pose), POST /drop/via/add (optional poses on the way).
+# Without joints_deg the arm just holds the object until POST /object/release. DROP=false: off.
+drop:
+  enabled: true
+  joints_deg: [50.29, -83.63, 132.8, -157.55, -78.51, -36.08]   # recorded 2026-11-26 (box); [base .. wrist_3] deg
+  via_deg: []                     # optional list of poses passed on the way there (and back)
+  settle_s: 1.2                   # arm still after the close command for this long (RG2 closing)
+  open_wait_s: 1.0                # wait after opening before going back
+  joint_speed: 0.4                # rad/s for the drop moves (also capped by MAX_JOINT_SPEED)
+
+gripper:
+  open_mm: 100                  # RG2: 0..110 mm
+  close_mm: 0
+  force_n: 20                   # RG2: 3..40 N
+  onrobot_ip: ""                # OnRobot Compute Box IP (GRIPPER=onrobot), or ONROBOT_IP=...
+  tool_io:                      # GRIPPER=tool_io: pin -> state (tool digital out 0 = pin 16, out 1 = 17)
+    close: {16: 1}              # RG2 on this arm: tool DO0 HIGH = close
+    open: {16: 0}               #                  tool DO0 LOW  = open
+
+# Web view (http://<camera-ip>:8090/)
+view_rotation_deg: 180          # camera is mounted upside down
+view_size: [1280, 960]          # px; [w, h] = wider full-FOV view, an int = square (same crop as detection)
+
+# Depth sources (all aligned to the colour image). The web view buttons switch the source
+# live - the arm follows whichever is selected. DEPTH_SOURCE=... in the env overrides this.
+depth_source: fused             # stereo | tof | fused (falls back if the sensor is missing)
+# How "fused" is made (FUSION_ENGINE=... in the env overrides this):
+#   heuristic  per-pixel rule on the app CPU (fuse_near_m / fuse_far_m below)
+#   neural     depthai ToFStereoFusion (beta, RVC4): ToF + NeuralDepth MEDIUM + fusion network.
+#              Uses its own ToF MID_RANGE and neural stereo: stereo_engine / tof_profile are ignored.
+#   vpp        ToF painted as a virtual pattern onto the stereo pair, then classic StereoDepth.
+#              EXPERIMENTAL: on OAK4-LITE-TOF (2026-11-26) its stereo outputs stayed empty - use neural.
+fusion_engine: heuristic       # classic StereoDepth + ToF fused on the CPU (neural: see above)
+neural_fusion_confidence: 0.3   # neural only: 0..1, fused pixels below this are dropped
+fusion_tof_near: true           # neural / vpp: ToF wins below fuse_near_m, blends into the device-fused
+                                # depth up to fuse_far_m (the network alone leans on stereo up close)
+vpp_size: [640, 400]            # vpp only: rectified stereo size (1280x800 = denser, hotter)
+stereo_engine: classic          # classic (StereoDepth, runs cooler) | neural (NeuralDepth)
+stereo_preset: ROBOTICS         # classic only: DEFAULT / ROBOTICS / ACCURACY / DENSITY / FAST_ACCURACY / FAST_DENSITY / HIGH_DETAIL / FACE
+stereo_size: [640, 400]         # classic only: mono input size, px
+neural_depth_model: NEURAL_DEPTH_LARGE   # neural only: NANO / SMALL / MEDIUM / LARGE / EXTRA_LARGE
+tof: auto                       # auto (use it if the device has one) | true | false
+tof_profile: HIGH_RANGE         # LOW_RANGE | MID_RANGE | HIGH_RANGE - MID wraps a wall at ~3 m to a few cm
+tof_min_m: 0.10                 # ToF closer than this is dropped (VD55H1 noise / the desk under the lens)
+tof_confidence: 0.0             # 0..1 amplitude filter, 0 = off (no measurable effect in our tests)
+fuse_near_m: 0.35               # closer than this (by ToF): fused = ToF only
+fuse_far_m: 0.8                 # farther than this: fused = stereo only (blend in between)
+
+# Depth view (second stream): fixed colour range so colours stay stable while you move
+depth_view_range_m: [0.15, 1.5]
+depth_view_size: 960
+view_fps: 12
+# Video labels on the RGB stream (toggle with "l" in the web view).
+# {device} = camera product name, {source} = selected depth source.
+view_labels:
+  - "NO PC - everything runs on the {device}"
+  - "UR ROS 2 driver on the camera"
+  - "Hand AI on-device"
+  - "Depth: {source}"
