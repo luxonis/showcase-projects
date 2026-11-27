@@ -152,7 +152,7 @@ class _Renderer:
 def start_web_view(tracker, port: int, rotation: int = 0, fps: float = 12.0,
                    depth_size: int = 960, depth_range_m=(0.15, 1.5)) -> ThreadingHTTPServer:
     def draw_rgb():
-        frame = tracker.view_frame
+        frame = tracker.display_frame()
         return None if frame is None else render(frame, tracker, rotation)
 
     def draw_depth():

@@ -236,14 +236,12 @@ class HeldObject:
         self.debug: dict = {}                       # last cue internals (GET /object/debug)
         self._suppress_until = 0.0
         self._lock = threading.Lock()
-        self._frame = None                        # (seq, bgr, stamp) for the worker
-        self._seq = 0
+        self._frame = None                        # (camera seq, bgr, stamp, depth_fn) for the worker
         self._select = None                       # pending selection request
         self._tracking = False
         self._selecting = False                   # selection queued / running in the worker
         self._models_ready = self.mode == "cue"
         self._epoch = 0                           # bumped by clear(); stale worker results are dropped
-        self._depth_fn = None
         self._stop = threading.Event()
         self.models_go = threading.Event()        # set by the caller once the camera pipeline is up
         if self.mode == "xmem":
@@ -255,13 +253,12 @@ class HeldObject:
         return not (self.mode == "xmem" and self._tracking)
 
     # ---- called from the HandTracker thread, every new colour frame --------------------
-    def process(self, bgr: np.ndarray, now: float, palm, hand_depth_m: float, depth_fn) -> None:
-        """palm: (cx, cy, w, h) normalised or None. depth_fn(px box) -> mm crop (selected source)."""
-        self._depth_fn = depth_fn
+    def process(self, bgr: np.ndarray, now: float, palm, hand_depth_m: float, depth_fn, seq: int) -> None:
+        """palm: (cx, cy, w, h) normalised or None. depth_fn(px box) -> mm crop (selected source)
+        of the depth at this frame's arrival. seq: the frame's camera sequence number."""
         if self._tracking:
             with self._lock:
-                self._seq += 1
-                self._frame = (self._seq, bgr, now)
+                self._frame = (seq, bgr, now, depth_fn)
             return
         cue = None
         if palm is not None and now >= self._suppress_until:
@@ -285,24 +282,27 @@ class HeldObject:
         moved = prev is None or max(abs(cue["x"] - prev["x"]), abs(cue["y"] - prev["y"])) > self.cfg.select_jitter
         self._stable = 1 if moved else self._stable + 1
         if self.mode == "cue":
-            self._commit(self._observe(cue["mask"], now, 1.0), cue["mask"], self._epoch, "tracking (cue)")
+            self._commit(self._observe(cue["mask"], now, 1.0, depth_fn, seq), cue["mask"], self._epoch,
+                         "tracking (cue)")
         elif self._stable >= self.cfg.select_frames and self._models_ready and not self._selecting:
             with self._lock:
                 if self._tracking:
                     return
                 self._selecting = True
-                self._select = {"bgr": bgr.copy(), "cue": cue, "stamp": now, "epoch": self._epoch}
+                self._select = {"bgr": bgr.copy(), "cue": cue, "stamp": now, "epoch": self._epoch,
+                                "depth_fn": depth_fn, "seq": seq}
                 self.status = "selecting"
 
-    def _observe(self, mask: np.ndarray, stamp: float, conf: float) -> ObjectObservation | None:
-        """Observation (centroid, box, median depth) of a mask; None if it is too small."""
+    def _observe(self, mask: np.ndarray, stamp: float, conf: float, depth_fn, seq: int) -> ObjectObservation | None:
+        """Observation (centroid, box, median depth) of a mask; None if it is too small.
+        depth_fn must read the depth from the mask frame's arrival, not the newest (the camera moves)."""
         ys, xs = np.nonzero(mask)
         if xs.size < self.cfg.min_mask_px:
             return None
         fh, fw = mask.shape
         x0, x1, y0, y1 = int(xs.min()), int(xs.max()) + 1, int(ys.min()), int(ys.max()) + 1
         z = float("nan")
-        d = self._depth_fn((x0, y0, x1, y1)) if self._depth_fn else None
+        d = depth_fn((x0, y0, x1, y1))
         if d is not None:
             m = cv2.erode(mask[y0:y1, x0:x1].astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
             if m.sum() < 20:
@@ -312,7 +312,7 @@ class HeldObject:
             if v.size >= max(10, 0.15 * m.sum()):
                 z = float(np.median(v)) / 1000.0
         return ObjectObservation(float(xs.mean()) / fw, float(ys.mean()) / fh, z, (x1 - x0) / fw,
-                                 (y1 - y0) / fh, xs.size / float(fw * fh), stamp, conf)
+                                 (y1 - y0) / fh, xs.size / float(fw * fh), stamp, conf, seq)
 
     def _commit(self, obs, mask, epoch: int, status: str) -> bool:
         """Publish a result - only if no clear() happened since the work for it started."""
@@ -427,7 +427,7 @@ class HeldObject:
             self.mode, self.status, self._models_ready = "cue", "searching", True
             return
 
-        tracker, lb, last_seq, lost = None, None, 0, 0
+        tracker, lb, last_seq, lost = None, None, -1, 0
         while not self._stop.is_set():
             with self._lock:
                 req, self._select = self._select, None
@@ -437,7 +437,7 @@ class HeldObject:
                     try:
                         if req["epoch"] == self._epoch:
                             tracker, lb = self._start(req, selector, sessions, XMemTracker)
-                            last_seq, lost = 0, 0
+                            last_seq, lost = -1, 0
                     finally:
                         self._selecting = False
                     continue
@@ -445,7 +445,7 @@ class HeldObject:
                     self._stop.wait(0.005)
                     continue
                 epoch = self._epoch
-                seq, bgr, stamp = frame
+                seq, bgr, stamp, depth_fn = frame
                 last_seq = seq
                 img, _ = letterbox(bgr)
                 m, conf = tracker.step(img)
@@ -453,7 +453,7 @@ class HeldObject:
                 if epoch != self._epoch:
                     continue
                 mask = unletterbox_mask(m, lb, (bgr.shape[1], bgr.shape[0]))
-                obs = self._observe(mask, stamp, conf)
+                obs = self._observe(mask, stamp, conf, depth_fn, seq)
                 if obs is None:
                     lost += 1
                     if self._commit(None, None, epoch, f"lost {lost}/{self.cfg.lost_frames}") \
@@ -497,7 +497,8 @@ class HeldObject:
             if req["epoch"] != self._epoch:
                 return None, None
             self._tracking = True
-        self._commit(self._observe(mask, req["stamp"], score), mask, req["epoch"], "tracking")
+        self._commit(self._observe(mask, req["stamp"], score, req["depth_fn"], req["seq"]), mask, req["epoch"],
+                     "tracking")
         self.log(f"[held_object] object selected: {n} px, skin {skin:.2f}, covers cue {cover:.2f}, "
                  f"score {score:.2f}, MobileSAM {ms:.0f} ms - tracking with XMem")
         return tracker, lb
